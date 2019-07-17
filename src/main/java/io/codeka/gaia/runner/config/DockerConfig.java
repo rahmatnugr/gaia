@@ -1,9 +1,8 @@
 package io.codeka.gaia.runner.config;
 
-import com.spotify.docker.client.DefaultDockerClient;
-import com.spotify.docker.client.DockerClient;
-import com.spotify.docker.client.messages.ContainerConfig;
-import com.spotify.docker.client.messages.HostConfig;
+import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.model.ContainerConfig;
+import com.github.dockerjava.core.DockerClientBuilder;
 import io.codeka.gaia.bo.Settings;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -21,28 +20,26 @@ public class DockerConfig {
      */
     @Bean
     DockerClient client(Settings settings) {
-        return DefaultDockerClient
-                .builder()
-                .uri(settings.getDockerDaemonUrl())
+        return DockerClientBuilder.getInstance()
                 .build();
     }
 
     @Bean
-    ContainerConfig.Builder containerConfig(){
-        return ContainerConfig.builder()
-                .image("hashicorp/terraform:0.11.14")
+    ContainerConfig containerConfig(){
+        return new ContainerConfig()
+                .withImage("hashicorp/terraform:0.11.14")
                 // bind mounting the docker sock (to be able to use docker provider in terraform)
-                .hostConfig(HostConfig.builder().binds(HostConfig.Bind.builder().from("/var/run/docker.sock").to("/var/run/docker.sock").build()).build())
+                // .withHostConfig(HostConfig.builder().binds(HostConfig.Bind.builder().from("/var/run/docker.sock").to("/var/run/docker.sock").build()).build())
                 // resetting entrypoint to empty
-                .entrypoint()
+                .withEntrypoint(null)
                 // and using a simple shell as command
-                .cmd("/bin/sh")
-                .attachStdin(true)
-                .attachStdout(true)
-                .attachStderr(true)
-                .stdinOnce(true)
-                .openStdin(true)
-                .tty(false);
+                .withCmd(new String[]{"/bin/sh"})
+                .withAttachStdin(true)
+                .withAttachStdout(true)
+                .withAttachStderr(true)
+                .withStdInOnce(true)
+                .withStdinOpen(true)
+                .withTty(false);
     }
 
 }

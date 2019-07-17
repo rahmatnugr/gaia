@@ -1,18 +1,20 @@
 package io.codeka.gaia.runner;
 
-import com.spotify.docker.client.DockerClient;
-import com.spotify.docker.client.messages.ContainerConfig;
+import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.model.ContainerConfig;
+import com.github.dockerjava.core.command.AttachContainerResultCallback;
+import com.github.dockerjava.core.command.PullImageResultCallback;
+import com.github.dockerjava.core.command.WaitContainerResultCallback;
 import io.codeka.gaia.bo.*;
 import io.codeka.gaia.repository.JobRepository;
 import io.codeka.gaia.repository.StackRepository;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.io.input.ReaderInputStream;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.io.PipedInputStream;
-import java.io.PipedOutputStream;
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
 import java.util.HashMap;
@@ -27,7 +29,7 @@ public class StackRunner {
 
     private DockerClient dockerClient;
 
-    private ContainerConfig.Builder containerConfigBuilder;
+    private ContainerConfig containerConfig;
 
     private Settings settings;
 
@@ -42,9 +44,9 @@ public class StackRunner {
     private JobRepository jobRepository;
 
     @Autowired
-    public StackRunner(DockerClient dockerClient, ContainerConfig.Builder containerConfigBuilder, Settings settings, StackCommandBuilder stackCommandBuilder, StackRepository stackRepository, HttpHijackWorkaround httpHijackWorkaround, JobRepository jobRepository) {
+    public StackRunner(DockerClient dockerClient, ContainerConfig containerConfig, Settings settings, StackCommandBuilder stackCommandBuilder, StackRepository stackRepository, HttpHijackWorkaround httpHijackWorkaround, JobRepository jobRepository) {
         this.dockerClient = dockerClient;
-        this.containerConfigBuilder = containerConfigBuilder;
+        this.containerConfig = containerConfig;
         this.settings = settings;
         this.stackCommandBuilder = stackCommandBuilder;
         this.stackRepository = stackRepository;
@@ -55,24 +57,35 @@ public class StackRunner {
     private int runContainerForJob(Job job, String script){
         try{
             // FIXME This is certainly no thread safe !
-            var containerConfig = containerConfigBuilder
-                    .env(settings.env())
-                    .build();
+            var containerConfig = this.containerConfig
+                    .withEnv(settings.env().toArray(new String[]{}));
 
             // pull the image
-            dockerClient.pull("hashicorp/terraform:0.11.14");
+            dockerClient.pullImageCmd("hashicorp/terraform:0.11.14")
+                    .exec(new PullImageResultCallback())
+                    .awaitCompletion();
 
             System.out.println("Create container");
-            var containerCreation = dockerClient.createContainer(containerConfig);
-            var containerId = containerCreation.id();
+            var containerCreation = dockerClient.createContainerCmd("hashicorp/terraform:0.11.14")
+                    .withEntrypoint()
+                    // and using a simple shell as command
+                    .withCmd(new String[]{"/bin/sh"})
+                    .withAttachStdin(true)
+                    .withAttachStdout(true)
+                    .withAttachStderr(true)
+                    .withStdInOnce(true)
+                    .withStdinOpen(true)
+                    .withTty(false)
+                    .withEnv(settings.env().toArray(new String[]{}));
 
-            // attach stdin
-            System.err.println("Attach container");
-            var logStream = dockerClient.attachContainer(containerId, DockerClient.AttachParameter.STDIN, DockerClient.AttachParameter.STDOUT, DockerClient.AttachParameter.STDERR, DockerClient.AttachParameter.STREAM);
-            var writable = httpHijackWorkaround.getOutputStream(logStream, "unix:///var/apply/docker.sock");
+            var containerId = containerCreation.exec().getId();
+
+            //DockerClient.AttachParameter.STDIN, DockerClient.AttachParameter.STDOUT, DockerClient.AttachParameter.STDERR, DockerClient.AttachParameter.STREAM);
+            //var writable = httpHijackWorkaround.getOutputStream(logStream, "unix:///var/apply/docker.sock");
 
             System.err.println("Starting container");
-            dockerClient.startContainer(containerId);
+            //dockerClient.startContainer(containerId);
+            dockerClient.startContainerCmd(containerId).exec();
 
             final PipedInputStream stdout = new PipedInputStream();
             final PipedInputStream stderr = new PipedInputStream();
@@ -80,19 +93,19 @@ public class StackRunner {
             final PipedOutputStream stderr_pipe = new PipedOutputStream(stderr);
 
             // writing to System.err
-            CompletableFuture.runAsync(() -> {
-                try {
-                    System.err.println("Copying to System.err");
-                    System.err.println("Attaching stdout and stderr");
-                    // apply another attachment for stdout and stderr (who knows why?)
-                    dockerClient.attachContainer(containerId,
-                            DockerClient.AttachParameter.LOGS, DockerClient.AttachParameter.STDOUT,
-                            DockerClient.AttachParameter.STDERR, DockerClient.AttachParameter.STREAM)
-                            .attach(stdout_pipe, stderr_pipe, true);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            });
+//            CompletableFuture.runAsync(() -> {
+//                try {
+//                    System.err.println("Copying to System.err");
+//                    System.err.println("Attaching stdout and stderr");
+//                    // apply another attachment for stdout and stderr (who knows why?)
+//                    dockerClient.attachContainer(containerId,
+//                            DockerClient.AttachParameter.LOGS, DockerClient.AttachParameter.STDOUT,
+//                            DockerClient.AttachParameter.STDERR, DockerClient.AttachParameter.STREAM)
+//                            .attach(stdout_pipe, stderr_pipe, true);
+//                } catch (Exception e) {
+//                    e.printStackTrace();
+//                }
+//            });
 
             CompletableFuture.runAsync(() -> {
                 try {
@@ -112,16 +125,23 @@ public class StackRunner {
             });
 
             System.err.println("Writing buffer");
-            writable.write(ByteBuffer.wrap(script.getBytes()));
-            writable.close();
+            StringReader reader = new StringReader(script);
+            InputStream is = new ReaderInputStream(reader, Charset.defaultCharset());
+
+            // attach stdin
+            System.err.println("Attach container");
+            var logStream = dockerClient.attachContainerCmd(containerId)
+                    .withStdIn(is)
+                    .exec(new AttachContainerResultCallback())
+                    .awaitCompletion();
 
             // wait for the container to exit
             System.err.println("Waiting container exit");
-            var containerExit = dockerClient.waitContainer(containerCreation.id());
+            var containerExit = dockerClient.waitContainerCmd(containerId).exec(new WaitContainerResultCallback()).awaitStatusCode();
 
-            dockerClient.removeContainer(containerCreation.id());
+            dockerClient.removeContainerCmd(containerId).exec();
 
-            return Math.toIntExact(containerExit.statusCode());
+            return containerExit;
         } catch (Exception e) {
             e.printStackTrace();
             return 99;

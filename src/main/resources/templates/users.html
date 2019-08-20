@@ -37,20 +37,57 @@
 
 <template id="template">
     <div class="block module_description">
-        <b-table :items="users" :fields="fields" stripped fixed >
-            <!-- A custom formatted column -->
-            <template slot="team" slot-scope="data">
-                <vue-multiselect
-                        :multiple="false"
-                        label="id"
-                        track-by="id"
-                        searchable
-                        placeholder="Select user team"
-                        v-model="data.item.team"
-                        @input="changeTeam(data.item)"
-                        :options="$teams"></vue-multiselect>
-            </template>
-        </b-table>
+
+        <b-tabs>
+
+            <b-tab active>
+                <template slot="title">
+                    <i class="far fa-user"></i> Users
+                </template>
+
+                <b-table :items="users" :fields="users_fields" fixed>
+                    <!-- A custom formatted column -->
+                    <template slot="team" slot-scope="data">
+                        <vue-multiselect
+                                :multiple="false"
+                                label="id"
+                                track-by="id"
+                                searchable
+                                placeholder="Select user team"
+                                v-model="data.item.team"
+                                @input="changeTeam(data.item)"
+                                :options="$teams"></vue-multiselect>
+                    </template>
+                </b-table>
+
+            </b-tab>
+
+            <b-tab>
+                <template slot="title">
+                    <i class="fa fa-users"></i> Teams
+                </template>
+
+                <b-button class="m-3" variant="success" v-b-modal.new-team><i class="fa fa-plus"></i> New Team</b-button>
+
+                <b-list-group>
+                    <b-list-group-item v-for="team in $teams" class="d-flex justify-content-between align-items-center">
+                        {{team.id}}
+                        <div>
+                            <b-badge v-if="usersCount(team) > 0" variant="primary">{{usersCount(team)}} users</b-badge>
+                            <b-button v-if="usersCount(team) === 0" size="sm" variant="danger" @click="confirmDeleteTeam(team.id)"><i class="far fa-trash-alt"></i></b-button>
+                        </div>
+                    </b-list-group-item>
+                </b-list-group>
+
+                <b-modal id="new-team">
+                    New Team
+                </b-modal>
+
+            </b-tab>
+
+        </b-tabs>
+
+
     </div>
 </template>
 
@@ -102,10 +139,10 @@
 
                     new Vue({
                         el: "#placeholder",
-                        data: () => {return {
+                        data: _ => ({
                             users,
-                            fields: ["username", "team"]
-                        }},
+                            users_fields: ["username", "team"]
+                        }),
                         methods: {
                             changeTeam: function(user) {
                                 const message = Messenger().post({
@@ -126,6 +163,22 @@
                                         message: `Error saving user ${user.username}.`
                                     })
                                 });
+                            },
+                            usersCount: function(team) {
+                                return users.filter(user => user.team !== null && user.team.id === team.id).length;
+                            },
+                            confirmDeleteTeam: function(team) {
+                                return this.$bvModal.msgBoxConfirm(`Do you want to delete the team ${team} ?`, {
+                                    title: "Delete team?",
+                                    centered: true,
+                                    noCloseOnBackdrop: true,
+                                    cancelTitle: 'No',
+                                    okVariant: 'danger',
+                                    okTitle: 'Yes',
+                                    returnFocus: 'body'
+                                }).then(_ => {
+                                    console.log(`delete ${team}`);
+                                });
                             }
                         },
                         template: "#template"
@@ -134,6 +187,10 @@
                     $('[data-toggle="tooltip"]').tooltip();
                 });
         });
+
+    const hasUsers= function(team) {
+        return users.some(user => typeof user.team !== "undefined" && user.team.id === team.id);
+    }
 </script>
 
 </body>
